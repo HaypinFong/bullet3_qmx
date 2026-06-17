@@ -59,6 +59,7 @@ public:
 	virtual void vrGenericTrackerMoveCallback(int controllerId, float pos[4], float orientation[4]) {}
 
 	virtual void processCommandLineArgs(int argc, char* argv[]){};
+	virtual bool monopolyKeyboardEvent() { return false; };  // 260616FHP
 };
 
 class ExampleEntries

@@ -182,11 +182,14 @@ void MyKeyboardCallback(int key, int state)
 	{
 		if (gui2 && !handled)
 		{
+			if (sCurrentDemo && sCurrentDemo->monopolyKeyboardEvent())	// 260616FHP
+				;
+			else
 			handled = gui2->keyboardCallback(key, state);
 		}
 	}
 
-	if (!handled && sCurrentDemo)
+	if (/* !handled && */ sCurrentDemo)	// 260616FHP: let keyboard event broadcast to demo
 	{
 		handled = sCurrentDemo->keyboardCallback(key, state);
 	}

@@ -31,6 +31,8 @@ class btTransformUtil
 public:
 	static void integrateTransform(const btTransform& curTrans, const btVector3& linvel, const btVector3& angvel, btScalar timeStep, btTransform& predictedTransform)
 	{
+		if (linvel.length() > 1e-3 || angvel.length() > 1e-3)
+			bool bFound = true;
 		predictedTransform.setOrigin(curTrans.getOrigin() + linvel * timeStep);
 		//	#define QUATERNION_DERIVATIVE
 #ifdef QUATERNION_DERIVATIVE

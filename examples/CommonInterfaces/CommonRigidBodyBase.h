@@ -23,6 +23,17 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 
 	//data for picking objects
 	class btRigidBody* m_pickedBody;
+	//260616FHP
+	class btRigidBody* m_pickedBodyOnce;	// unlike pickedBody clear after release mousebutton, keep until next pickedBody
+	// keyboard pushforce param
+	bool m_keyUp = false;
+	bool m_keyDown = false;
+	bool m_keyLeft = false;
+	bool m_keyRight = false;
+	const btScalar KEY_FORCE = 150.0f;  // axial push force at keyboard down once
+	const btScalar KEY_DAMP = 15.0f;    // velocity damp to avoid goahead forever
+	const btScalar TORQUE_STRENGTH = 20.0f;
+	const btScalar ANGULAR_DAMP_COEFF = 8.f;
 	class btTypedConstraint* m_pickedConstraint;
 	int m_savedState;
 	btVector3 m_oldPickingPos;
@@ -74,6 +85,66 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 	{
 		if (m_dynamicsWorld)
 		{
+			bool pressed_arrow_key = false;
+			pressed_arrow_key |= m_keyUp;
+			pressed_arrow_key |= m_keyDown;
+			pressed_arrow_key |= m_keyLeft;
+			pressed_arrow_key |= m_keyRight;
+			if (pressed_arrow_key && m_pickedBodyOnce != nullptr && !m_pickedBodyOnce->isStaticObject())
+			{
+				btRigidBody* body = m_pickedBodyOnce;
+				// 唤醒物体，休眠时才能受力
+				body->setActivationState(ACTIVE_TAG);
+				// 2. 获取刚体旋转基矩阵：局部空间 → 世界空间转换
+				btMatrix3x3 basis = body->getWorldTransform().getBasis();
+
+				int countArrowKeyPressed = 0;
+				countArrowKeyPressed += m_keyUp    ? 1 : 0;
+				countArrowKeyPressed += m_keyDown  ? 1 : 0;
+				countArrowKeyPressed += m_keyLeft  ? 1 : 0;
+				countArrowKeyPressed += m_keyRight ? 1 : 0;
+				// 施加局部坐标系下转向力矩(当同时有两个相邻方向键被按下时)
+				if (countArrowKeyPressed == 2 && !(m_keyUp && m_keyDown) && !(m_keyLeft && m_keyRight))
+				{
+					// 1 施加局部Y轴力矩
+					int itorqueOriY = -1;
+					if ((m_keyUp && m_keyLeft) || (m_keyDown && m_keyRight))
+						itorqueOriY = 1;
+					
+					// 局部 Y 负方向 = 俯视顺时针
+					btVector3 localTorque(0, TORQUE_STRENGTH * itorqueOriY, 0);
+					btVector3 worldTorque = basis * localTorque;
+					// 直接施加局部力矩
+					body->applyTorque(worldTorque);
+
+					// 2 施加角阻尼，削弱旋转
+					btVector3 worldAngVel = body->getAngularVelocity();  // 世界坐标系
+					btVector3 worldDampTorque = worldAngVel * (-ANGULAR_DAMP_COEFF);
+					body->applyTorque(worldDampTorque);
+				}
+
+				// 施加局部坐标系下轴向力
+				btVector3 localForce(0, 0, 0);
+				btVector3 vel = body->getLinearVelocity();  // 世界坐标系
+
+				// 上：-Z 轴；下：+Z 轴
+				if (m_keyUp) localForce.setZ(localForce.z() - KEY_FORCE);
+				if (m_keyDown) localForce.setZ(localForce.z() + KEY_FORCE);
+
+				// 左：-X 轴；右：+X 轴
+				if (m_keyLeft) localForce.setX(localForce.x() - KEY_FORCE);
+				if (m_keyRight) localForce.setX(localForce.x() + KEY_FORCE);
+
+				// 局部力转世界力
+				btVector3 worldForce = basis * localForce;
+
+				// 阻尼：抵消现有速度，防止无限加速飘飞
+				worldForce -= vel * KEY_DAMP;  // todo...应该只有沿接触面运动方向才有阻尼，弹起时重力方向不该有阻尼(或者空气阻尼超级小)
+
+				// 在质心施加全局坐标系轴向力
+				body->applyCentralForce(worldForce);  //applyCentralForce 只接收世界坐标系力向量
+			}
+
 			m_dynamicsWorld->stepSimulation(deltaTime);
 		}
 	}
@@ -162,6 +233,31 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 			//b3Printf("btDefaultSerializer wrote testFile.bullet");
 			delete serializer;
 			return true;
+		}
+		// 260616FHP
+		// handle B3G_LEFT_ARROW... apply centerforce on m_pickedBodyOnce
+		bool pressed = (state == 1 /* GLFW_PRESS*/);
+		switch (key)
+		{
+			case B3G_UP_ARROW:
+				m_keyUp = pressed;
+				break;
+			case B3G_DOWN_ARROW:
+				m_keyDown = pressed;
+				break;
+			case B3G_LEFT_ARROW:
+				m_keyLeft = pressed;
+				break;
+			case B3G_RIGHT_ARROW:
+				m_keyRight = pressed;
+				break;
+			// 可选：ESC清空选中
+			case B3G_ESCAPE:
+				if (m_pickedBodyOnce)
+					m_pickedBodyOnce->forceActivationState(m_savedState);
+					m_pickedBodyOnce->activate();
+					m_pickedBodyOnce = nullptr;
+				break;
 		}
 		return false;  //don't handle this key
 	}
@@ -329,6 +425,7 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 				if (!(body->isStaticObject() || body->isKinematicObject()))
 				{
 					m_pickedBody = body;
+					m_pickedBodyOnce = body;
 					m_savedState = m_pickedBody->getActivationState();
 					m_pickedBody->setActivationState(DISABLE_DEACTIVATION);
 					//printf("pickPos=%f,%f,%f\n",pickPos.getX(),pickPos.getY(),pickPos.getZ());
@@ -352,6 +449,15 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 		}
 		return false;
 	}
+
+	virtual bool monopolyKeyboardEvent()
+	{
+		// monopoly keyboard event when picked body, let keyboard signal broadcast to keyboardCallback only
+		if (m_pickedBodyOnce)
+			return true;
+		return false;
+	}
+
 	virtual bool movePickedBody(const btVector3& rayFromWorld, const btVector3& rayToWorld)
 	{
 		if (m_pickedBody && m_pickedConstraint)
@@ -378,8 +484,8 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 	{
 		if (m_pickedConstraint)
 		{
-			m_pickedBody->forceActivationState(m_savedState);
-			m_pickedBody->activate();
+			//m_pickedBody->forceActivationState(m_savedState);	// 260616FHP: move to B3G_ESCAPE keybaord callback
+			//m_pickedBody->activate();
 			m_dynamicsWorld->removeConstraint(m_pickedConstraint);
 			delete m_pickedConstraint;
 			m_pickedConstraint = 0;

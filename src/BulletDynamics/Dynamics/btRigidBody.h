@@ -273,11 +273,15 @@ public:
 
 	void applyCentralForce(const btVector3& force)
 	{
+		if (force.length() > 10.5)
+			bool bFound = true;
 		m_totalForce += force * m_linearFactor;
 	}
 
 	const btVector3& getTotalForce() const
 	{
+		if (m_totalForce.length() > 10.0)
+			bool bFound = true;
 		return m_totalForce;
 	};
 

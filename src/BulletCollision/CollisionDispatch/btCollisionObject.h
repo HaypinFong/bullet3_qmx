@@ -423,25 +423,29 @@ public:
 		m_interpolationWorldTransform = trans;
 	}
 
-	void setInterpolationLinearVelocity(const btVector3& linvel)
-	{
-		m_updateRevision++;
-		m_interpolationLinearVelocity = linvel;
-	}
+	void setInterpolationLinearVelocity(const btVector3& linvel);
+	//{
+	//	m_updateRevision++;
+	//	m_interpolationLinearVelocity = linvel;
+	//}
 
-	void setInterpolationAngularVelocity(const btVector3& angvel)
-	{
-		m_updateRevision++;
-		m_interpolationAngularVelocity = angvel;
-	}
+	void setInterpolationAngularVelocity(const btVector3& angvel);
+	//{
+	//	m_updateRevision++;
+	//	m_interpolationAngularVelocity = angvel;
+	//}
 
 	const btVector3& getInterpolationLinearVelocity() const
 	{
+		if (m_interpolationLinearVelocity.length() > 1e-3)
+			bool bFound = true;
 		return m_interpolationLinearVelocity;
 	}
 
 	const btVector3& getInterpolationAngularVelocity() const
 	{
+		if (m_interpolationAngularVelocity.length() > 1e-3)
+			bool bFound = true;
 		return m_interpolationAngularVelocity;
 	}
 

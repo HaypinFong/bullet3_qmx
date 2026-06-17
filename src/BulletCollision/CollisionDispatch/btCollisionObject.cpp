@@ -136,3 +136,15 @@ void btCollisionObject::serializeSingleObject(class btSerializer* serializer) co
 	const char* structType = serialize(chunk->m_oldPtr, serializer);
 	serializer->finalizeChunk(chunk, structType, BT_COLLISIONOBJECT_CODE, (void*)this);
 }
+
+void btCollisionObject::setInterpolationLinearVelocity(const btVector3& linvel)
+{
+	m_updateRevision++;
+	m_interpolationLinearVelocity = linvel;
+}
+
+void btCollisionObject::setInterpolationAngularVelocity(const btVector3& angvel)
+{
+	m_updateRevision++;
+	m_interpolationAngularVelocity = angvel;
+}
