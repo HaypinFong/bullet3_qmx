@@ -103,7 +103,7 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 				countArrowKeyPressed += m_keyDown  ? 1 : 0;
 				countArrowKeyPressed += m_keyLeft  ? 1 : 0;
 				countArrowKeyPressed += m_keyRight ? 1 : 0;
-				// 施加局部坐标系下转向力矩(当同时有两个相邻方向键被按下时)
+				// 施加局部坐标系下转向力矩(当且仅当同时有两个相邻方向键被按下时,同时按下上下键或左右键不产生扭矩)
 				if (countArrowKeyPressed == 2 && !(m_keyUp && m_keyDown) && !(m_keyLeft && m_keyRight))
 				{
 					// 1 施加局部Y轴力矩
@@ -122,27 +122,30 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 					btVector3 worldDampTorque = worldAngVel * (-ANGULAR_DAMP_COEFF);
 					body->applyTorque(worldDampTorque);
 				}
+				// 施加局部坐标系下轴心推力(必须有前进或后退键按下,允许同时按下前进后退抵消,仅单纯按下左或右或同时按下左右不产生推力)
+				if (m_keyUp || m_keyDown)
+				{
+					// 2 施加局部坐标系下轴向力
+					btVector3 localForce(0, 0, 0);
+					btVector3 vel = body->getLinearVelocity();  // 世界坐标系
 
-				// 施加局部坐标系下轴向力
-				btVector3 localForce(0, 0, 0);
-				btVector3 vel = body->getLinearVelocity();  // 世界坐标系
+					// 上：-Z 轴；下：+Z 轴
+					if (m_keyUp) localForce.setZ(localForce.z() - KEY_FORCE);
+					if (m_keyDown) localForce.setZ(localForce.z() + KEY_FORCE);
 
-				// 上：-Z 轴；下：+Z 轴
-				if (m_keyUp) localForce.setZ(localForce.z() - KEY_FORCE);
-				if (m_keyDown) localForce.setZ(localForce.z() + KEY_FORCE);
+					// 左：-X 轴；右：+X 轴
+					if (m_keyLeft) localForce.setX(localForce.x() - KEY_FORCE);
+					if (m_keyRight) localForce.setX(localForce.x() + KEY_FORCE);
 
-				// 左：-X 轴；右：+X 轴
-				if (m_keyLeft) localForce.setX(localForce.x() - KEY_FORCE);
-				if (m_keyRight) localForce.setX(localForce.x() + KEY_FORCE);
+					// 局部力转世界力
+					btVector3 worldForce = basis * localForce;
 
-				// 局部力转世界力
-				btVector3 worldForce = basis * localForce;
+					// 阻尼：抵消现有速度，防止无限加速飘飞
+					worldForce -= vel * KEY_DAMP;  // todo...应该只有沿接触面运动方向才有阻尼，弹起时重力方向不该有阻尼(或者空气阻尼超级小)
 
-				// 阻尼：抵消现有速度，防止无限加速飘飞
-				worldForce -= vel * KEY_DAMP;  // todo...应该只有沿接触面运动方向才有阻尼，弹起时重力方向不该有阻尼(或者空气阻尼超级小)
-
-				// 在质心施加全局坐标系轴向力
-				body->applyCentralForce(worldForce);  //applyCentralForce 只接收世界坐标系力向量
+					// 在质心施加全局坐标系轴向力
+					body->applyCentralForce(worldForce);  //applyCentralForce 只接收世界坐标系力向量
+				}
 			}
 
 			m_dynamicsWorld->stepSimulation(deltaTime);
