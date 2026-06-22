@@ -36,7 +36,7 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 	const btScalar KEY_DAMP = 8;    // velocity damp to avoid goahead forever
 	const btScalar TORQUE_STRENGTH = 20.0f;
 	const btScalar ANGULAR_DAMP_COEFF = 30.f;
-	const btScalar bounce = 0.3f;
+	const btScalar bounce = 0.15f;
 	const btScalar frictionMu = 0.35f;
 	class btTypedConstraint* m_pickedConstraint;
 	int m_savedState;
@@ -105,7 +105,7 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 		// 穿透阈值，防止微小抖动
 		const btScalar epsilon = btScalar(0.01);
 
-		btVector3 linVel = body->getLinearVelocity();
+		btVector3 linVel = body->getLinearVelocity();	// 世界坐标系
 
 		// 分支1：立方体底部低于地面 → 穿透，强制抬升并抵消向下速度
 		if (cubeBottomY < groundY - epsilon)
@@ -138,7 +138,7 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 			* 负号: 力与滑动速度反向，持续减速实现摩擦阻尼
 			*/
 			// 分离水平速度XZ，剔除竖直Y速度（下落不产生摩擦）
-			btVector3 vel = body->getLinearVelocity();
+			btVector3 vel = linVel;
 			btVector3 velHorizontal(vel.x(), 0, vel.z());
 			btScalar horSpeed = velHorizontal.length();
 
@@ -202,6 +202,10 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 				body->setActivationState(ACTIVE_TAG);
 				// 获取刚体旋转基矩阵：局部空间 → 世界空间转换
 				btMatrix3x3 basis = body->getWorldTransform().getBasis();
+				btVector3 vel = body->getLinearVelocity();  // 世界坐标系
+				btVector3 vel_local = basis.inverse() * vel;
+				btVector3 velHorizontal_local(vel_local.x(), 0, vel_local.z());
+				btScalar horSpeed_local = velHorizontal_local.length();
 
 				int countArrowKeyPressed = 0;
 				countArrowKeyPressed += m_keyUp    ? 1 : 0;
@@ -222,13 +226,25 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 					// 直接施加局部力矩
 					body->applyTorque(worldTorque);
 				}
+				else if (countArrowKeyPressed == 1 && (m_keyLeft || m_keyRight) && horSpeed_local > 1e-1)
+				{
+					// 在有局部坐标系水平速度的前提下按下左或右键也允许产生扭矩
+					
+					// 1 施加局部Y轴力矩
+					int itorqueOriY = m_keyLeft ?1:- 1;
+
+					// 局部 Y 负方向 = 俯视顺时针
+					btVector3 localTorque(0, TORQUE_STRENGTH * itorqueOriY, 0);
+					btVector3 worldTorque = basis * localTorque;
+					// 直接施加局部力矩
+					body->applyTorque(worldTorque);
+				}
 
 				// 施加局部坐标系下轴心推力(必须有前进或后退键按下,允许同时按下前进后退抵消,仅单纯按下左或右或同时按下左右不产生推力)
 				if (m_keyUp || m_keyDown)
 				{
 					// 2 施加局部坐标系下轴向力
 					btVector3 localForce(0, 0, 0);
-					btVector3 vel = body->getLinearVelocity();  // 世界坐标系
 
 					// 上：-Z 轴；下：+Z 轴
 					if (m_keyUp) localForce.setZ(localForce.z() - KEY_FORCE);

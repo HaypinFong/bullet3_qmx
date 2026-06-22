@@ -65,7 +65,7 @@ void SimpleBoxExample::initPhysics()
 	{
 		//create a few dynamic rigidbodies
 		// Re-using the same collision is better for memory usage and performance
-		btBoxShape* colShape = createBoxShape(btVector3(1, 1, 1));
+		btBoxShape* colShape = createBoxShape(btVector3(1, 1, 2));
 
 		m_collisionShapes.push_back(colShape);
 
