@@ -454,6 +454,8 @@ public:
 
 	inline void setAngularVelocity(const btVector3& ang_vel)
 	{
+		if (ang_vel.length() > 1e-3)
+			bool bFound = true;
 		m_updateRevision++;
 		m_angularVelocity = ang_vel;
 		#if defined(BT_CLAMP_VELOCITY_TO) && BT_CLAMP_VELOCITY_TO > 0

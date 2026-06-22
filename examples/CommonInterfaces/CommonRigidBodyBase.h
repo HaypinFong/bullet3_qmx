@@ -11,6 +11,8 @@
 #include "CommonWindowInterface.h"
 #include "BulletCollision/NarrowPhaseCollision/btRaycastCallback.h"
 
+#define FORBID_DRAG_CONSTRAINT	false	// 260616FHP
+
 struct CommonRigidBodyBase : public CommonExampleInterface
 {
 	//keep the collision shapes, for deletion/cleanup
@@ -30,10 +32,12 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 	bool m_keyDown = false;
 	bool m_keyLeft = false;
 	bool m_keyRight = false;
-	const btScalar KEY_FORCE = 150.0f;  // axial push force at keyboard down once
-	const btScalar KEY_DAMP = 15.0f;    // velocity damp to avoid goahead forever
+	const btScalar KEY_FORCE = 10.0f;  // axial push force at keyboard down once
+	const btScalar KEY_DAMP = 8;    // velocity damp to avoid goahead forever
 	const btScalar TORQUE_STRENGTH = 20.0f;
-	const btScalar ANGULAR_DAMP_COEFF = 8.f;
+	const btScalar ANGULAR_DAMP_COEFF = 30.f;
+	const btScalar bounce = 0.3f;
+	const btScalar frictionMu = 0.35f;
 	class btTypedConstraint* m_pickedConstraint;
 	int m_savedState;
 	btVector3 m_oldPickingPos;
@@ -48,6 +52,7 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 		  m_collisionConfiguration(0),
 		  m_dynamicsWorld(0),
 		  m_pickedBody(0),
+		  m_pickedBodyOnce(0),
 		  m_pickedConstraint(0),
 		  m_guiHelper(helper)
 	{
@@ -81,10 +86,110 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 		m_dynamicsWorld->setGravity(btVector3(0, -10, 0));
 	}
 
+	void FixCubeGroundPenetration(btRigidBody* body)
+	{
+		// 唤醒物体，休眠时才能受力
+		body->setActivationState(ACTIVE_TAG);
+
+		btTransform trans = body->getWorldTransform();
+		btVector3 center = trans.getOrigin();
+		btVector3 min_bb, max_bb;
+		// 立方体碰撞盒半高
+		body->getCollisionShape()->getAabb(trans, min_bb, max_bb);  // 世界坐标系下包围盒，地面是世界坐标系Y=0
+		btScalar halfY = 0.5 * (max_bb - min_bb).y();
+		// 立方体底部世界Y坐标
+		btScalar cubeBottomY = center.y() - halfY;
+
+		// 采样立方体中心正下方地形高度
+		btScalar groundY = 0;  //GetTerrainHeight(center.x(), center.z());
+		// 穿透阈值，防止微小抖动
+		const btScalar epsilon = btScalar(0.01);
+
+		btVector3 linVel = body->getLinearVelocity();
+
+		// 分支1：立方体底部低于地面 → 穿透，强制抬升并抵消向下速度
+		if (cubeBottomY < groundY - epsilon)
+		{
+			// 计算需要抬高的偏移量
+			btScalar deltaUp = groundY - cubeBottomY + epsilon;
+			// 修正物体中心位置，刚好落在地面上方
+			center.setY(center.y() + deltaUp);
+			trans.setOrigin(center);
+			body->setWorldTransform(trans);
+
+			// 撞击地面时，竖直速度反向乘以弹性系数
+			if (linVel.y() < 0)
+			{
+				//linVel.setY(0);
+				linVel.setY(-linVel.y() * bounce);
+				body->setLinearVelocity(linVel);
+			}
+		}
+		// 分支2：立方体贴地（底部贴近地面，无穿透），仅施加摩擦，不修改位置
+		else if (cubeBottomY <= groundY + epsilon)
+		{
+			/**
+			* 仿地表滑动摩擦逻辑
+			* Ffric = -μ·m·g·vxz/|vxz|
+			* μ: 地表摩擦系数，泥土0.3，水泥0.8，冰0.1
+			* m: 刚体质量
+			* g: 重力加速度
+			* vxz: 水平xz平面速度(消除竖直下落速度干扰)
+			* 负号: 力与滑动速度反向，持续减速实现摩擦阻尼
+			*/
+			// 分离水平速度XZ，剔除竖直Y速度（下落不产生摩擦）
+			btVector3 vel = body->getLinearVelocity();
+			btVector3 velHorizontal(vel.x(), 0, vel.z());
+			btScalar horSpeed = velHorizontal.length();
+
+			// 速度极小直接清零，防止微小抖动
+			if (horSpeed < 0.001f)
+			{
+				body->setLinearVelocity(btVector3(0, vel.y(), 0));
+				return;
+			}
+
+			// 计算滑动摩擦力
+			btScalar mass = body->getInvMass() > 0 ? 1.0f / body->getInvMass() : 0;
+			btScalar gravityMag = 9.8f;
+			btScalar normalForce = mass * gravityMag;  // 法向压力 = mg
+			btScalar frictionForceMag = frictionMu * normalForce;
+
+			// 1 摩擦力方向：与水平速度反向单位向量 × 摩擦力大小
+			btVector3 frictionForce = -(velHorizontal / horSpeed) * frictionForceMag;
+
+			// 2 叠加地表滚动阻尼阻力
+			//frictionForce -= velHorizontal * KEY_DAMP;
+
+			// 在质心施加全局坐标系阻力（模拟滑动摩擦）
+			body->applyCentralForce(frictionForce);
+
+			// 3 施加角阻尼，削弱旋转
+			btVector3 worldAngVel = body->getAngularVelocity();  // 世界坐标系
+			worldAngVel.setX(0);                                 // 只施加Y轴旋转角阻尼
+			worldAngVel.setZ(0);
+			if (worldAngVel.length() > 1e-3)
+			{
+				btVector3 worldDampTorque = worldAngVel * (-ANGULAR_DAMP_COEFF);
+				body->applyTorque(worldDampTorque);
+			}
+		}
+		// 分支3：立方体在空中，无操作，自由落体
+	}
+
 	virtual void stepSimulation(float deltaTime)
 	{
 		if (m_dynamicsWorld)
 		{
+			// 0 前置修正：所有立方体落地防穿透、落地施加摩擦
+			btCollisionObjectArray& objs = m_dynamicsWorld->getCollisionObjectArray();
+			for (int i = 0; i < objs.size(); i++)
+			{
+				btRigidBody* body = btRigidBody::upcast(objs[i]);
+				if (body)
+					FixCubeGroundPenetration(body);
+			}
+
 			bool pressed_arrow_key = false;
 			pressed_arrow_key |= m_keyUp;
 			pressed_arrow_key |= m_keyDown;
@@ -95,7 +200,7 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 				btRigidBody* body = m_pickedBodyOnce;
 				// 唤醒物体，休眠时才能受力
 				body->setActivationState(ACTIVE_TAG);
-				// 2. 获取刚体旋转基矩阵：局部空间 → 世界空间转换
+				// 获取刚体旋转基矩阵：局部空间 → 世界空间转换
 				btMatrix3x3 basis = body->getWorldTransform().getBasis();
 
 				int countArrowKeyPressed = 0;
@@ -116,12 +221,8 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 					btVector3 worldTorque = basis * localTorque;
 					// 直接施加局部力矩
 					body->applyTorque(worldTorque);
-
-					// 2 施加角阻尼，削弱旋转
-					btVector3 worldAngVel = body->getAngularVelocity();  // 世界坐标系
-					btVector3 worldDampTorque = worldAngVel * (-ANGULAR_DAMP_COEFF);
-					body->applyTorque(worldDampTorque);
 				}
+
 				// 施加局部坐标系下轴心推力(必须有前进或后退键按下,允许同时按下前进后退抵消,仅单纯按下左或右或同时按下左右不产生推力)
 				if (m_keyUp || m_keyDown)
 				{
@@ -139,9 +240,6 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 
 					// 局部力转世界力
 					btVector3 worldForce = basis * localForce;
-
-					// 阻尼：抵消现有速度，防止无限加速飘飞
-					worldForce -= vel * KEY_DAMP;  // todo...应该只有沿接触面运动方向才有阻尼，弹起时重力方向不该有阻尼(或者空气阻尼超级小)
 
 					// 在质心施加全局坐标系轴向力
 					body->applyCentralForce(worldForce);  //applyCentralForce 只接收世界坐标系力向量
@@ -427,8 +525,11 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 				//other exclusions?
 				if (!(body->isStaticObject() || body->isKinematicObject()))
 				{
-					m_pickedBody = body;
 					m_pickedBodyOnce = body;
+					m_savedState = m_pickedBodyOnce->getActivationState();
+					m_pickedBodyOnce->setActivationState(DISABLE_DEACTIVATION);
+					#if FORBID_DRAG_CONSTRAINT
+					m_pickedBody = body;
 					m_savedState = m_pickedBody->getActivationState();
 					m_pickedBody->setActivationState(DISABLE_DEACTIVATION);
 					//printf("pickPos=%f,%f,%f\n",pickPos.getX(),pickPos.getY(),pickPos.getZ());
@@ -440,6 +541,7 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 					p2p->m_setting.m_impulseClamp = mousePickClamping;
 					//very weak constraint for picking
 					p2p->m_setting.m_tau = 0.001f;
+					#endif
 				}
 			}
 
