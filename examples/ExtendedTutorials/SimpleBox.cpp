@@ -81,12 +81,29 @@ void SimpleBoxExample::initPhysics()
 		btVector3 localInertia(0, 0, 0);
 		if (isDynamic)
 			colShape->calculateLocalInertia(mass, localInertia);
-
+#ifdef FAKE_CAR_COUNT_SQUARE_ROOT
+		float gap_x = 1.5f;
+		float gap_z = 2.5f;
+		float x_min = -0.5f * FAKE_CAR_COUNT_SQUARE_ROOT * gap_x;
+		float z_min = -0.5f * FAKE_CAR_COUNT_SQUARE_ROOT * gap_z;
+		for (int x = 0; x < FAKE_CAR_COUNT_SQUARE_ROOT;x++)
+		{
+			for (int z = 0; z < FAKE_CAR_COUNT_SQUARE_ROOT; z++)
+			{
+				startTransform.setOrigin(btVector3(
+					btScalar(x_min + x * gap_x),
+					btScalar(2),
+					btScalar(z_min + z * gap_z)));
+				createRigidBody(mass, startTransform, colShape);
+			}
+		}
+#else
 		startTransform.setOrigin(btVector3(
 			btScalar(0),
 			btScalar(20),
 			btScalar(0)));
 		createRigidBody(mass, startTransform, colShape);
+#endif
 	}
 
 	m_guiHelper->autogenerateGraphicsObjects(m_dynamicsWorld);

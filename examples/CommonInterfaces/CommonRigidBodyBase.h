@@ -10,8 +10,9 @@
 #include "CommonGraphicsAppInterface.h"
 #include "CommonWindowInterface.h"
 #include "BulletCollision/NarrowPhaseCollision/btRaycastCallback.h"
-
+#include <random>
 #define FORBID_DRAG_CONSTRAINT	false	// 260616FHP
+//#define FAKE_CAR_COUNT_SQUARE_ROOT 2
 
 struct CommonRigidBodyBase : public CommonExampleInterface
 {
@@ -195,9 +196,31 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 			pressed_arrow_key |= m_keyDown;
 			pressed_arrow_key |= m_keyLeft;
 			pressed_arrow_key |= m_keyRight;
+			static std::random_device rd;
+			static std::mt19937 gen(rd());
+			static std::uniform_real_distribution<double> dist_float(0.5, 1.0);
+			double random_v = dist_float(gen);
+			auto applyTorque = [this](btRigidBody* const body, const btMatrix3x3& basis, const int& itorqueOriY)
+			{
+				// 局部 Y 负方向 = 俯视顺时针
+				btVector3 localTorque(0, TORQUE_STRENGTH * itorqueOriY, 0);
+				btVector3 worldTorque = basis * localTorque;
+				// 直接施加局部力矩
+				body->applyTorque(worldTorque);
+			};
+#ifdef FAKE_CAR_COUNT_SQUARE_ROOT
+			for (int i = 0; i < objs.size(); i++)
+			{
+			btRigidBody* body = btRigidBody::upcast(objs[i]);
+			if (pressed_arrow_key && body != nullptr && !body->isStaticObject())
+			{
+#else
+			
 			if (pressed_arrow_key && m_pickedBodyOnce != nullptr && !m_pickedBodyOnce->isStaticObject())
 			{
 				btRigidBody* body = m_pickedBodyOnce;
+				random_v = 1.0f;
+#endif
 				// 唤醒物体，休眠时才能受力
 				body->setActivationState(ACTIVE_TAG);
 				// 获取刚体旋转基矩阵：局部空间 → 世界空间转换
@@ -208,9 +231,9 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 				btScalar horSpeed_local = velHorizontal_local.length();
 
 				int countArrowKeyPressed = 0;
-				countArrowKeyPressed += m_keyUp    ? 1 : 0;
-				countArrowKeyPressed += m_keyDown  ? 1 : 0;
-				countArrowKeyPressed += m_keyLeft  ? 1 : 0;
+				countArrowKeyPressed += m_keyUp ? 1 : 0;
+				countArrowKeyPressed += m_keyDown ? 1 : 0;
+				countArrowKeyPressed += m_keyLeft ? 1 : 0;
 				countArrowKeyPressed += m_keyRight ? 1 : 0;
 				// 施加局部坐标系下转向力矩(当且仅当同时有两个相邻方向键被按下时,同时按下上下键或左右键不产生扭矩)
 				if (countArrowKeyPressed == 2 && !(m_keyUp && m_keyDown) && !(m_keyLeft && m_keyRight))
@@ -219,25 +242,17 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 					int itorqueOriY = -1;
 					if ((m_keyUp && m_keyLeft) || (m_keyDown && m_keyRight))
 						itorqueOriY = 1;
-					
-					// 局部 Y 负方向 = 俯视顺时针
-					btVector3 localTorque(0, TORQUE_STRENGTH * itorqueOriY, 0);
-					btVector3 worldTorque = basis * localTorque;
-					// 直接施加局部力矩
-					body->applyTorque(worldTorque);
+
+					applyTorque(body, basis, itorqueOriY);
 				}
 				else if (countArrowKeyPressed == 1 && (m_keyLeft || m_keyRight) && horSpeed_local > 1e-1)
 				{
 					// 在有局部坐标系水平速度的前提下按下左或右键也允许产生扭矩
-					
-					// 1 施加局部Y轴力矩
-					int itorqueOriY = m_keyLeft ?1:- 1;
 
-					// 局部 Y 负方向 = 俯视顺时针
-					btVector3 localTorque(0, TORQUE_STRENGTH * itorqueOriY, 0);
-					btVector3 worldTorque = basis * localTorque;
-					// 直接施加局部力矩
-					body->applyTorque(worldTorque);
+					// 1 施加局部Y轴力矩
+					int itorqueOriY = m_keyLeft ? 1 : -1;
+
+					applyTorque(body, basis, itorqueOriY);
 				}
 
 				// 施加局部坐标系下轴心推力(必须有前进或后退键按下,允许同时按下前进后退抵消,仅单纯按下左或右或同时按下左右不产生推力)
@@ -247,8 +262,8 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 					btVector3 localForce(0, 0, 0);
 
 					// 上：-Z 轴；下：+Z 轴
-					if (m_keyUp) localForce.setZ(localForce.z() - KEY_FORCE);
-					if (m_keyDown) localForce.setZ(localForce.z() + KEY_FORCE);
+					if (m_keyUp) localForce.setZ(localForce.z() - random_v*KEY_FORCE);
+					if (m_keyDown) localForce.setZ(localForce.z() + random_v*KEY_FORCE);
 
 					// 左：-X 轴；右：+X 轴
 					if (m_keyLeft) localForce.setX(localForce.x() - KEY_FORCE);
@@ -261,7 +276,9 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 					body->applyCentralForce(worldForce);  //applyCentralForce 只接收世界坐标系力向量
 				}
 			}
-
+#ifdef FAKE_CAR_COUNT_SQUARE_ROOT
+			}
+#endif
 			m_dynamicsWorld->stepSimulation(deltaTime);
 		}
 	}
@@ -370,7 +387,7 @@ struct CommonRigidBodyBase : public CommonExampleInterface
 				break;
 			// 可选：ESC清空选中
 			case B3G_ESCAPE:
-				if (m_pickedBodyOnce)
+				if (nullptr != m_pickedBodyOnce)
 					m_pickedBodyOnce->forceActivationState(m_savedState);
 					m_pickedBodyOnce->activate();
 					m_pickedBodyOnce = nullptr;
