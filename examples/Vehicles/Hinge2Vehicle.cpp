@@ -53,7 +53,8 @@ public:
 
 	GUIHelperInterface* m_guiHelper;
 	int m_wheelInstances[4];
-
+	btHinge2Constraint* m_wheelConstraints[4];  // 新增：保存4个车轮Hinge2约束
+	btScalar m_prevWheelAngle[4];            // 缓存每轮上一帧angle2(滚动角，区别于Y轴摆动角)，用于时间步差分计算车轮滚动角速度
 	bool m_useDefaultCamera;
 	//----------------------------
 
@@ -151,7 +152,7 @@ static float maxEngineForce = 1000.f;  //this should be engine/velocity dependen
 //static float	maxBreakingForce = 100.f;
 
 static float gVehicleSteering = 0.f;
-static float steeringIncrement = 0.04f;
+static float steeringIncrement = 0.1f;
 static float steeringClamp = 0.3f;
 static float wheelRadius = 0.5f;
 static float wheelWidth = 0.4f;
@@ -182,6 +183,9 @@ Hinge2Vehicle::Hinge2Vehicle(struct GUIHelperInterface* helper)
 	m_wheelShape = 0;
 	m_cameraPosition = btVector3(30, 30, 30);
 	m_useDefaultCamera = false;
+
+	for (int i = 0; i < 4; i++) m_wheelConstraints[i] = nullptr;
+	for (int i = 0; i < 4; i++) m_prevWheelAngle[i] = 0.f;
 }
 
 void Hinge2Vehicle::exitPhysics()
@@ -190,6 +194,16 @@ void Hinge2Vehicle::exitPhysics()
 
 	//remove the rigidbodies from the dynamics world and delete them
 	int i;
+	// 新增：释放车轮约束
+	for (int w = 0; w < 4; w++)
+	{
+		if (m_wheelConstraints[w])
+		{
+			m_dynamicsWorld->removeConstraint(m_wheelConstraints[w]);
+			delete m_wheelConstraints[w];
+			m_wheelConstraints[w] = nullptr;
+		}
+	}
 	for (i = m_dynamicsWorld->getNumCollisionObjects() - 1; i >= 0; i--)
 	{
 		btCollisionObject* obj = m_dynamicsWorld->getCollisionObjectArray()[i];
@@ -357,11 +371,12 @@ void Hinge2Vehicle::initPhysics()
 
 		//m_guiHelper->get2dCanvasInterface();
 
-		//pHinge2->setLowerLimit(-SIMD_HALF_PI * 0.5f);
-		//pHinge2->setUpperLimit(SIMD_HALF_PI * 0.5f);
+		pHinge2->setLowerLimit(-SIMD_HALF_PI * 0.5f);
+		pHinge2->setUpperLimit(SIMD_HALF_PI * 0.5f);
 		
 		// add constraint to world
 		m_dynamicsWorld->addConstraint(pHinge2, true);
+		m_wheelConstraints[i] = pHinge2;
 
 		// Drive engine.
 		pHinge2->enableMotor(3, true);
@@ -415,6 +430,57 @@ void Hinge2Vehicle::stepSimulation(float deltaTime)
 
 	if (m_dynamicsWorld)
 	{
+		// ========== 新增：每帧更新车轮驱动、转向控制 ==========
+		const btScalar wheelMaxMotorTorque = 1000.f;
+		const btScalar steerMotorMaxForce = 1000.f;
+		const btScalar steerSpeedScale = 4;   // 转向电机转速缩放
+		const btScalar engineSpeedScale = 3;  // 车轮滚动速度缩放
+
+		for (int wheelIdx = 0; wheelIdx < 4; wheelIdx++)
+		{
+			btHinge2Constraint* hinge = m_wheelConstraints[wheelIdx];
+			if (!hinge) continue;
+
+			// 0. 差分计算车轮滚动角速度
+			// 必须先刷新约束内部变换，否则角度读取滞后/错误
+			hinge->calculateTransforms();
+			btScalar curAngle = hinge->getAngle2();  // 当前车轮滚动总转角(rad)`getAngle2()` 依赖约束内部变换矩阵，每帧读取前必须调用 `hinge->calculateTransforms()，否则角度永远不变，转速为 0。
+			btScalar deltaAngle = curAngle - m_prevWheelAngle[wheelIdx];
+			// 处理角度跳变（超过±π的折返，车轮无限旋转会跨±PI）
+			if (deltaAngle > SIMD_PI) deltaAngle -= 2* SIMD_PI;
+			if (deltaAngle < -SIMD_PI) deltaAngle += 2* SIMD_PI;
+			// 滚动轴瞬时角速度 rad/s（X轴转速）
+			btScalar wheelAngVel = deltaAngle / dt;
+			m_prevWheelAngle[wheelIdx] = curAngle;
+
+			// 1. 驱动控制：油门gEngineForce控制车轮滚动速度
+			btScalar wheelTargetVel = gEngineForce / maxEngineForce * engineSpeedScale;
+			hinge->setMaxMotorForce(3, wheelMaxMotorTorque);
+			// 刹车：抵消滚动速度
+			if (gBreakingForce > 0)
+			{
+				wheelTargetVel = wheelAngVel;	// 减速从当前角速度开始
+				btScalar brakeFactor = gBreakingForce / 100.f;
+				wheelTargetVel *= (1.f - brakeFactor);
+				hinge->setMaxMotorForce(3, wheelMaxMotorTorque/1000);
+			}
+			hinge->setTargetVelocity(3, wheelTargetVel);
+
+			// 2. 转向控制：仅前轮(0、1号轮)生效，后轮(2、3)锁死转向
+			if (wheelIdx == 0 || wheelIdx == 1)
+			{
+				btScalar steerTargetVel = gVehicleSteering * steerSpeedScale;
+				hinge->setMaxMotorForce(5, steerMotorMaxForce);
+				hinge->setTargetVelocity(5, steerTargetVel);
+			}
+			else
+			{
+				// 后轮转向电机速度置0，保持直行
+				hinge->setTargetVelocity(5, 0.f);
+			}
+		}
+		// ======================================================
+
 		//during idle mode, just run 1 simulation step maximum
 		int maxSimSubSteps = 2;
 
@@ -493,14 +559,14 @@ bool Hinge2Vehicle::keyboardCallback(int key, int state)
 
 	if (state)
 	{
-		if (isShiftPressed)
-		{
-		}
-		else
+		//if (isShiftPressed)
+		//{
+		//}
+		//else
 		{
 			switch (key)
 			{
-				case B3G_LEFT_ARROW:
+				case B3G_RIGHT_ARROW:
 				{
 					handled = true;
 					gVehicleSteering += steeringIncrement;
@@ -509,7 +575,7 @@ bool Hinge2Vehicle::keyboardCallback(int key, int state)
 
 					break;
 				}
-				case B3G_RIGHT_ARROW:
+				case B3G_LEFT_ARROW:
 				{
 					handled = true;
 					gVehicleSteering -= steeringIncrement;
@@ -521,14 +587,14 @@ bool Hinge2Vehicle::keyboardCallback(int key, int state)
 				case B3G_UP_ARROW:
 				{
 					handled = true;
-					gEngineForce = maxEngineForce;
+					gEngineForce = -maxEngineForce;
 					gBreakingForce = 0.f;
 					break;
 				}
 				case B3G_DOWN_ARROW:
 				{
 					handled = true;
-					gEngineForce = -maxEngineForce;
+					gEngineForce = maxEngineForce;
 					gBreakingForce = 0.f;
 					break;
 				}
@@ -579,6 +645,42 @@ bool Hinge2Vehicle::keyboardCallback(int key, int state)
 	}
 	else
 	{
+		switch (key)
+		{
+			case B3G_UP_ARROW:
+			{
+				gEngineForce = 0.f;
+				gBreakingForce = defaultBreakingForce;
+				handled = true;
+				break;
+			}
+			case B3G_DOWN_ARROW:
+			{
+				gEngineForce = 0.f;
+				gBreakingForce = defaultBreakingForce;
+				handled = true;
+				break;
+			}
+			case B3G_LEFT_ARROW:
+			{
+				gVehicleSteering += steeringIncrement;
+				if (gVehicleSteering > steeringClamp)
+					gVehicleSteering = steeringClamp;
+				handled = true;
+				break;
+			}
+			case B3G_RIGHT_ARROW:
+			{
+				gVehicleSteering -= steeringIncrement;
+				if (gVehicleSteering < -steeringClamp)
+					gVehicleSteering = -steeringClamp;
+				handled = true;
+				break;
+			}
+			default:
+
+				break;
+		}
 	}
 	return handled;
 }

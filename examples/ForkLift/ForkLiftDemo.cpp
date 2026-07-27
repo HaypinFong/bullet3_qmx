@@ -58,8 +58,10 @@ public:
 	btRigidBody* localCreateRigidBody(btScalar mass, const btTransform& worldTransform, btCollisionShape* colSape);
 
 	int m_wheelInstances[4];
+	bool m_stopSimulation = false;
 
 	//----------------------------
+	btVector3 m_ChassisStartPos;
 	btRigidBody* m_liftBody;
 	btVector3 m_liftStartPos;
 	btHingeConstraint* m_liftHinge;
@@ -125,6 +127,12 @@ public:
 	virtual bool mouseButtonCallback(int button, int state, float x, float y)
 	{
 		return false;
+	}
+
+	virtual bool monopolyKeyboardEvent()
+	{
+		// monopoly keyboard event when picked body, let keyboard signal broadcast to keyboardCallback only
+		return true;
 	}
 
 	virtual bool keyboardCallback(int key, int state);
@@ -355,7 +363,7 @@ void ForkLiftDemo::initPhysics()
 
 	//create ground object
 	localCreateRigidBody(0, tr, groundShape);
-
+	float height_delta_init = 2.0f;	// watching wheels keep initial pos to chassis when falling to ground
 	btCollisionShape* chassisShape = new btBoxShape(btVector3(1.f, 0.5f, 2.f));
 	m_collisionShapes.push_back(chassisShape);
 
@@ -364,7 +372,7 @@ void ForkLiftDemo::initPhysics()
 	btTransform localTrans;
 	localTrans.setIdentity();
 	//localTrans effectively shifts the center of mass with respect to the chassis
-	localTrans.setOrigin(btVector3(0, 1, 0));
+	localTrans.setOrigin(btVector3(0, 1, 0));	// 底盘地初始离地1-0.5=0.5，小车落在地上后弹簧压缩后底盘地离地不足0.5
 
 	compound->addChildShape(localTrans, chassisShape);
 
@@ -376,8 +384,8 @@ void ForkLiftDemo::initPhysics()
 		suppLocalTrans.setOrigin(btVector3(0, 1.0, 2.5));
 		compound->addChildShape(suppLocalTrans, suppShape);
 	}
-
-	tr.setOrigin(btVector3(0, 0.f, 0));
+	m_ChassisStartPos = btVector3(0, 0.f + height_delta_init, 0);
+	tr.setOrigin(m_ChassisStartPos);
 
 	m_carChassis = localCreateRigidBody(800, tr, compound);  //chassisShape);
 	//m_carChassis->setDamping(0.2,0.2);
@@ -401,7 +409,7 @@ void ForkLiftDemo::initPhysics()
 		btCollisionShape* liftShape = new btBoxShape(btVector3(0.5f, 2.0f, 0.05f));
 		m_collisionShapes.push_back(liftShape);
 		btTransform liftTrans;
-		m_liftStartPos = btVector3(0.0f, 2.5f, 3.05f);
+		m_liftStartPos = btVector3(0.0f, 2.5f + height_delta_init, 3.05f);
 		liftTrans.setIdentity();
 		liftTrans.setOrigin(m_liftStartPos);
 		m_liftBody = localCreateRigidBody(10, liftTrans, liftShape);
@@ -439,7 +447,7 @@ void ForkLiftDemo::initPhysics()
 		forkCompound->addChildShape(forkLocalTrans, forkShapeC);
 
 		btTransform forkTrans;
-		m_forkStartPos = btVector3(0.0f, 0.6f, 3.2f);
+		m_forkStartPos = btVector3(0.0f, 0.6f + height_delta_init, 3.2f);
 		forkTrans.setIdentity();
 		forkTrans.setOrigin(m_forkStartPos);
 		m_forkBody = localCreateRigidBody(5, forkTrans, forkCompound);
@@ -477,7 +485,7 @@ void ForkLiftDemo::initPhysics()
 		loadTrans.setOrigin(btVector3(-2.1f, 0.0f, 0.0f));
 		loadCompound->addChildShape(loadTrans, loadShapeC);
 		loadTrans.setIdentity();
-		m_loadStartPos = btVector3(0.0f, 3.5f, 7.0f);
+		m_loadStartPos = btVector3(0.0f, 3.5f + height_delta_init, 7.0f);
 		loadTrans.setOrigin(m_loadStartPos);
 		m_loadBody = localCreateRigidBody(loadMass, loadTrans, loadCompound);
 	}
@@ -492,7 +500,7 @@ void ForkLiftDemo::initPhysics()
 
 		m_dynamicsWorld->addVehicle(m_vehicle);
 
-		float connectionHeight = 1.2f;
+		float connectionHeight = 1.2f;	// 小车落地后向下射线检测到行程短于弹簧静平衡长度则压缩，弹起后收缩
 
 		bool isFrontWheel = true;
 
@@ -642,6 +650,8 @@ void ForkLiftDemo::stepSimulation(float deltaTime)
 {
 	//glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+	if (m_stopSimulation)
+		return;
 	{
 		int wheelIndex = 2;
 		m_vehicle->applyEngineForce(gEngineForce, wheelIndex);
@@ -738,6 +748,12 @@ void ForkLiftDemo::resetForklift()
 			m_vehicle->updateWheelTransform(i, true);
 		}
 	}
+	// reset vehicle to initial pos too
+	btTransform chassisTrans;
+	chassisTrans.setIdentity();
+	chassisTrans.setOrigin(m_ChassisStartPos);
+	m_carChassis->setCenterOfMassTransform(chassisTrans);
+
 	btTransform liftTrans;
 	liftTrans.setIdentity();
 	liftTrans.setOrigin(m_liftStartPos);
@@ -893,6 +909,9 @@ bool ForkLiftDemo::keyboardCallback(int key, int state)
 				case B3G_F5:
 					handled = true;
 					m_useDefaultCamera = !m_useDefaultCamera;
+					break;
+				case B3G_SPACE:
+					m_stopSimulation = !m_stopSimulation;
 					break;
 				default:
 					break;
