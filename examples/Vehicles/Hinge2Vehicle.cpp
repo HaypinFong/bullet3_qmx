@@ -41,6 +41,12 @@ class btCollisionShape;
 #include "../CommonInterfaces/CommonGraphicsAppInterface.h"
 
 #include "../CommonInterfaces/CommonRigidBodyBase.h"
+#include <memory>
+#include <random>
+#include <vector>
+
+class Hinge2VehicleSingle;
+static int gCarCountSquare = 15;  // n*n cars
 
 class Hinge2Vehicle : public CommonRigidBodyBase
 {
@@ -48,21 +54,16 @@ public:
 	/* extra stuff*/
 	btVector3 m_cameraPosition;
 
-	btRigidBody* m_carChassis;
 	btRigidBody* localCreateRigidBody(btScalar mass, const btTransform& worldTransform, btCollisionShape* colSape);
 
 	GUIHelperInterface* m_guiHelper;
-	int m_wheelInstances[4];
-	btHinge2Constraint* m_wheelConstraints[4];  // 新增：保存4个车轮Hinge2约束
-	btScalar m_prevWheelAngle[4];            // 缓存每轮上一帧angle2(滚动角，区别于Y轴摆动角)，用于时间步差分计算车轮滚动角速度
 	bool m_useDefaultCamera;
 	//----------------------------
 
 	class btTriangleIndexVertexArray* m_indexVertexArrays;
 
 	btVector3* m_vertices;
-
-	btCollisionShape* m_wheelShape;
+	std::vector<std::shared_ptr<Hinge2VehicleSingle> > m_cars;
 
 	float m_cameraHeight;
 
@@ -111,6 +112,35 @@ public:
 		return demo;
 	}
 	*/
+
+	virtual bool monopolyKeyboardEvent()
+	{
+		// monopoly keyboard event when picked body, let keyboard signal broadcast to keyboardCallback only
+		return true;
+	}
+};
+
+class Hinge2VehicleSingle
+{
+public:
+	Hinge2VehicleSingle(btVector3 pos, btScalar vrandom, Hinge2Vehicle* ins);
+	void initPhysics();
+	void exitPhysics();
+	void stepSimulation(float deltaTime);
+	void resetForklift();
+
+private:
+	btRigidBody* m_carChassis;
+	btTransform m_centerOfMass;
+
+	int m_wheelInstances[4];
+	btHinge2Constraint* m_wheelConstraints[4];  // 新增：保存4个车轮Hinge2约束
+	btScalar m_prevWheelAngle[4];               // 缓存每轮上一帧angle2(滚动角，区别于Y轴摆动角)，用于时间步差分计算车轮滚动角速度
+
+	btCollisionShape* m_wheelShape;
+	btVector3 m_pos_init;
+	Hinge2Vehicle* m_ins;
+	btScalar m_random;	// [0,1]
 };
 
 static btScalar maxMotorImpulse = 4000.f;
@@ -163,29 +193,54 @@ static float wheelWidth = 0.4f;
 //static float	rollInfluence = 0.1f;//1.0f;
 
 //static btScalar suspensionRestLength(0.6);
+static btScalar car_width = 3.0f;
+static btScalar car_length = 6.5f;
 
 #define CUBE_HALF_EXTENTS 1
 
 ////////////////////////////////////
 
+Hinge2VehicleSingle::Hinge2VehicleSingle(btVector3 pos, btScalar vrandom, Hinge2Vehicle* ins)
+	: m_carChassis(0), m_ins(ins), m_random(vrandom), m_pos_init(pos)
+{
+	m_wheelShape = 0;
+
+	for (int i = 0; i < 4; i++) m_wheelConstraints[i] = nullptr;
+	for (int i = 0; i < 4; i++) m_prevWheelAngle[i] = 0.f;
+}
+
 Hinge2Vehicle::Hinge2Vehicle(struct GUIHelperInterface* helper)
 	: CommonRigidBodyBase(helper),
-	  m_carChassis(0),
 	  m_guiHelper(helper),
 	  m_indexVertexArrays(0),
 	  m_vertices(0),
-	  m_cameraHeight(4.f),
+	  m_cameraHeight(20.f),
 	  m_minCameraDistance(3.f),
 	  m_maxCameraDistance(10.f)
 {
 	helper->setUpAxis(1);
 
-	m_wheelShape = 0;
-	m_cameraPosition = btVector3(30, 30, 30);
+	m_cameraPosition = btVector3(0.5 * gCarCountSquare * car_width, 30, 0.5 * gCarCountSquare * car_length);
 	m_useDefaultCamera = false;
 
-	for (int i = 0; i < 4; i++) m_wheelConstraints[i] = nullptr;
-	for (int i = 0; i < 4; i++) m_prevWheelAngle[i] = 0.f;
+	m_cars.resize(gCarCountSquare * gCarCountSquare);
+}
+
+void Hinge2VehicleSingle::exitPhysics()
+{
+	// 新增：释放车轮约束
+	for (int w = 0; w < 4; w++)
+	{
+		if (m_wheelConstraints[w])
+		{
+			m_ins->m_dynamicsWorld->removeConstraint(m_wheelConstraints[w]);
+			delete m_wheelConstraints[w];
+			m_wheelConstraints[w] = nullptr;
+		}
+	}
+
+	delete m_wheelShape;
+	m_wheelShape = 0;
 }
 
 void Hinge2Vehicle::exitPhysics()
@@ -194,16 +249,9 @@ void Hinge2Vehicle::exitPhysics()
 
 	//remove the rigidbodies from the dynamics world and delete them
 	int i;
-	// 新增：释放车轮约束
-	for (int w = 0; w < 4; w++)
-	{
-		if (m_wheelConstraints[w])
-		{
-			m_dynamicsWorld->removeConstraint(m_wheelConstraints[w]);
-			delete m_wheelConstraints[w];
-			m_wheelConstraints[w] = nullptr;
-		}
-	}
+	for (auto car : m_cars)
+		car->exitPhysics();
+
 	for (i = m_dynamicsWorld->getNumCollisionObjects() - 1; i >= 0; i--)
 	{
 		btCollisionObject* obj = m_dynamicsWorld->getCollisionObjectArray()[i];
@@ -241,9 +289,6 @@ void Hinge2Vehicle::exitPhysics()
 	delete m_dynamicsWorld;
 	m_dynamicsWorld = 0;
 
-	delete m_wheelShape;
-	m_wheelShape = 0;
-
 	//delete solver
 	delete m_solver;
 	m_solver = 0;
@@ -269,7 +314,7 @@ void Hinge2Vehicle::initPhysics()
 {
 	m_guiHelper->setUpAxis(1);
 
-	btCollisionShape* groundShape = new btBoxShape(btVector3(50, 3, 50));
+	btCollisionShape* groundShape = new btBoxShape(btVector3(0.5*gCarCountSquare * car_width * 2.0f, 0.1, 0.5*gCarCountSquare * car_length * 2.0f));
 	m_collisionShapes.push_back(groundShape);
 	m_collisionConfiguration = new btDefaultCollisionConfiguration();
 	m_dispatcher = new btCollisionDispatcher(m_collisionConfiguration);
@@ -302,18 +347,39 @@ void Hinge2Vehicle::initPhysics()
 	//m_dynamicsWorld->setGravity(btVector3(0,0,0));
 	btTransform tr;
 	tr.setIdentity();
-	tr.setOrigin(btVector3(0, -3, 0));
+	tr.setOrigin(btVector3(0, -0.1, 0));
 
 	//either use heightfield or triangle mesh
 
 	//create ground object
 	localCreateRigidBody(0, tr, groundShape);
 
+	// 生成车辆矩阵
+	std::random_device rd;
+	std::mt19937 gen(rd());
+	std::uniform_real_distribution<double> dist_float(0.0, 1.0);
+	btScalar minx = -0.5 * gCarCountSquare * car_width;  // width of car = 1*2+0.4=2.4
+	btScalar minz = -0.5 * gCarCountSquare * car_length;  // length of car = 2*2+0.5*2=5
+	for (int i = 0; i < gCarCountSquare; i++)
+	{
+		for (int j = 0; j < gCarCountSquare; j++)
+		{
+			double vrandom = dist_float(gen);
+			auto car = std::make_shared<Hinge2VehicleSingle>(btVector3(minx + i * car_width, 0, minz + j * car_length), vrandom, this);
+			m_cars[i * gCarCountSquare + j] = car;
+			car->initPhysics();
+		}
+	}
+	m_guiHelper->autogenerateGraphicsObjects(m_dynamicsWorld);
+}
+
+void Hinge2VehicleSingle::initPhysics()
+{
 	btCollisionShape* chassisShape = new btBoxShape(btVector3(1.f, 0.5f, 2.f));
-	m_collisionShapes.push_back(chassisShape);
+	m_ins->m_collisionShapes.push_back(chassisShape);
 
 	btCompoundShape* compound = new btCompoundShape();
-	m_collisionShapes.push_back(compound);
+	m_ins->m_collisionShapes.push_back(compound);
 	btTransform localTrans;
 	localTrans.setIdentity();
 	//localTrans effectively shifts the center of mass with respect to the chassis
@@ -330,22 +396,26 @@ void Hinge2Vehicle::initPhysics()
 		compound->addChildShape(suppLocalTrans, suppShape);
 	}
 
+	btTransform tr;
+	tr.setIdentity();
+
 	const btScalar FALLHEIGHT = 5;
-	tr.setOrigin(btVector3(0, FALLHEIGHT, 0));
+	tr.setOrigin(btVector3(0 + m_pos_init.getX(), FALLHEIGHT + m_pos_init.getY(), 0 + m_pos_init.getZ()));
 
 	const btScalar chassisMass = 2.0f;
 	const btScalar wheelMass = 1.0f;
-	m_carChassis = localCreateRigidBody(chassisMass, tr, compound);  //chassisShape);
+	m_carChassis = m_ins->localCreateRigidBody(chassisMass, tr, compound);  //chassisShape);
 	//m_carChassis->setDamping(0.2,0.2);
+	m_centerOfMass = m_carChassis->getCenterOfMassTransform();
 
 	//m_wheelShape = new btCylinderShapeX(btVector3(wheelWidth,wheelRadius,wheelRadius));
 	m_wheelShape = new btCylinderShapeX(btVector3(wheelWidth, wheelRadius, wheelRadius));
 
 	btVector3 wheelPos[4] = {
-		btVector3(btScalar(-1.), btScalar(FALLHEIGHT-0.25), btScalar(1.25)),
-		btVector3(btScalar(1.), btScalar(FALLHEIGHT-0.25), btScalar(1.25)),
-		btVector3(btScalar(1.), btScalar(FALLHEIGHT-0.25), btScalar(-1.25)),
-		btVector3(btScalar(-1.), btScalar(FALLHEIGHT-0.25), btScalar(-1.25))};
+		btVector3(btScalar(-1.+ m_pos_init.getX()), btScalar(FALLHEIGHT - 0.25 + m_pos_init.getY()), btScalar(1.25 + m_pos_init.getZ())),
+		btVector3(btScalar(1. + m_pos_init.getX()), btScalar(FALLHEIGHT - 0.25 + m_pos_init.getY()), btScalar(1.25 + m_pos_init.getZ())),
+		btVector3(btScalar(1. + m_pos_init.getX()), btScalar(FALLHEIGHT - 0.25 + m_pos_init.getY()), btScalar(-1.25+ m_pos_init.getZ())),
+		btVector3(btScalar(-1.+ m_pos_init.getX()), btScalar(FALLHEIGHT - 0.25 + m_pos_init.getY()), btScalar(-1.25+ m_pos_init.getZ()))};
 
 	for (int i = 0; i < 4; i++)
 	{
@@ -360,7 +430,7 @@ void Hinge2Vehicle::initPhysics()
 		tr.setIdentity();
 		tr.setOrigin(wheelPos[i]);
 
-		btRigidBody* pBodyB = createRigidBody(wheelMass, tr, m_wheelShape);
+		btRigidBody* pBodyB = m_ins->createRigidBody(wheelMass, tr, m_wheelShape);
 		pBodyB->setFriction(1110);
 		pBodyB->setActivationState(DISABLE_DEACTIVATION);
 		// add some data to build constraint frames
@@ -375,7 +445,7 @@ void Hinge2Vehicle::initPhysics()
 		pHinge2->setUpperLimit(SIMD_HALF_PI * 0.5f);
 		
 		// add constraint to world
-		m_dynamicsWorld->addConstraint(pHinge2, true);
+		m_ins->m_dynamicsWorld->addConstraint(pHinge2, true);
 		m_wheelConstraints[i] = pHinge2;
 
 		// Drive engine.
@@ -388,18 +458,16 @@ void Hinge2Vehicle::initPhysics()
 		pHinge2->setMaxMotorForce(5, 1000);
 		pHinge2->setTargetVelocity(5, 0);
 
-		pHinge2->setParam( BT_CONSTRAINT_CFM, 0.15f, 2 );
-		pHinge2->setParam( BT_CONSTRAINT_ERP, 0.35f, 2 );
+		pHinge2->setParam(BT_CONSTRAINT_CFM, 0.15f, 2);
+		pHinge2->setParam(BT_CONSTRAINT_ERP, 0.35f, 2);
 
-		pHinge2->setDamping( 2, 2.0 );
-		pHinge2->setStiffness( 2, 40.0 );
+		pHinge2->setDamping(2, 2.0);
+		pHinge2->setStiffness(2, 40.0);
 
 		pHinge2->setDbgDrawSize(btScalar(5.f));
 	}
 
 	resetForklift();
-
-	m_guiHelper->autogenerateGraphicsObjects(m_dynamicsWorld);
 }
 
 void Hinge2Vehicle::physicsDebugDraw(int debugFlags)
@@ -424,11 +492,11 @@ void Hinge2Vehicle::renderScene()
 	getDynamicsWorld()->getBroadphase()->getBroadphaseAabb(worldBoundsMin, worldBoundsMax);
 }
 
-void Hinge2Vehicle::stepSimulation(float deltaTime)
+void Hinge2VehicleSingle::stepSimulation(float deltaTime)
 {
 	float dt = deltaTime;
 
-	if (m_dynamicsWorld)
+	if (m_ins->m_dynamicsWorld)
 	{
 		// ========== 新增：每帧更新车轮驱动、转向控制 ==========
 		const btScalar wheelMaxMotorTorque = 1000.f;
@@ -447,24 +515,24 @@ void Hinge2Vehicle::stepSimulation(float deltaTime)
 			btScalar curAngle = hinge->getAngle2();  // 当前车轮滚动总转角(rad)`getAngle2()` 依赖约束内部变换矩阵，每帧读取前必须调用 `hinge->calculateTransforms()，否则角度永远不变，转速为 0。
 			btScalar deltaAngle = curAngle - m_prevWheelAngle[wheelIdx];
 			// 处理角度跳变（超过±π的折返，车轮无限旋转会跨±PI）
-			if (deltaAngle > SIMD_PI) deltaAngle -= 2* SIMD_PI;
-			if (deltaAngle < -SIMD_PI) deltaAngle += 2* SIMD_PI;
+			if (deltaAngle > SIMD_PI) deltaAngle -= 2 * SIMD_PI;
+			if (deltaAngle < -SIMD_PI) deltaAngle += 2 * SIMD_PI;
 			// 滚动轴瞬时角速度 rad/s（X轴转速）
 			btScalar wheelAngVel = deltaAngle / dt;
 			m_prevWheelAngle[wheelIdx] = curAngle;
 
 			// 1. 驱动控制：油门gEngineForce控制车轮滚动速度
 			btScalar wheelTargetVel = gEngineForce / maxEngineForce * engineSpeedScale;
-			hinge->setMaxMotorForce(3, wheelMaxMotorTorque);
+			hinge->setMaxMotorForce(3, m_random * wheelMaxMotorTorque);
 			// 刹车：抵消滚动速度
 			if (gBreakingForce > 0)
 			{
-				wheelTargetVel = wheelAngVel;	// 减速从当前角速度开始
+				wheelTargetVel = wheelAngVel;  // 减速从当前角速度开始
 				btScalar brakeFactor = gBreakingForce / 100.f;
 				wheelTargetVel *= (1.f - brakeFactor);
-				hinge->setMaxMotorForce(3, wheelMaxMotorTorque/1000);
+				hinge->setMaxMotorForce(3, wheelMaxMotorTorque / 1000);
 			}
-			hinge->setTargetVelocity(3, wheelTargetVel);
+			hinge->setTargetVelocity(3, m_random * wheelTargetVel);
 
 			// 2. 转向控制：仅前轮(0、1号轮)生效，后轮(2、3)锁死转向
 			if (wheelIdx == 0 || wheelIdx == 1)
@@ -480,7 +548,30 @@ void Hinge2Vehicle::stepSimulation(float deltaTime)
 			}
 		}
 		// ======================================================
+	}
+}
 
+void Hinge2Vehicle::stepSimulation(float deltaTime)
+{
+	float dt = deltaTime;
+	static std::vector<float> deltas;
+	if (deltas.size() < 10)
+		deltas.push_back(dt);
+	else
+	{
+		deltas.erase(deltas.begin());
+		deltas.push_back(dt);
+		float sum = 0;
+		for (auto dt : deltas)
+			sum += dt;
+		sum /= deltas.size();
+		printf("%.2f fps\n", 1.0 / sum);
+	}
+	for (auto& car : m_cars)
+		car->stepSimulation(dt);
+
+	if (m_dynamicsWorld)
+	{
 		//during idle mode, just run 1 simulation step maximum
 		int maxSimSubSteps = 2;
 
@@ -540,16 +631,23 @@ void Hinge2Vehicle::clientResetScene()
 	initPhysics();
 }
 
+void Hinge2VehicleSingle::resetForklift()
+{
+	m_carChassis->setCenterOfMassTransform(m_centerOfMass);//btTransform::getIdentity());
+	m_carChassis->setLinearVelocity(btVector3(0, 0, 0));
+	m_carChassis->setAngularVelocity(btVector3(0, 0, 0));
+
+	m_ins->m_dynamicsWorld->getBroadphase()->getOverlappingPairCache()->cleanProxyFromPairs(m_carChassis->getBroadphaseHandle(), m_ins->getDynamicsWorld()->getDispatcher());
+}
+
 void Hinge2Vehicle::resetForklift()
 {
 	gVehicleSteering = 0.f;
 	gBreakingForce = defaultBreakingForce;
 	gEngineForce = 0.f;
 
-	m_carChassis->setCenterOfMassTransform(btTransform::getIdentity());
-	m_carChassis->setLinearVelocity(btVector3(0, 0, 0));
-	m_carChassis->setAngularVelocity(btVector3(0, 0, 0));
-	m_dynamicsWorld->getBroadphase()->getOverlappingPairCache()->cleanProxyFromPairs(m_carChassis->getBroadphaseHandle(), getDynamicsWorld()->getDispatcher());
+	for (auto& car : m_cars)
+		car->resetForklift();
 }
 
 bool Hinge2Vehicle::keyboardCallback(int key, int state)
